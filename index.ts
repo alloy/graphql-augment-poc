@@ -1,5 +1,5 @@
 import { makeExecutableSchema } from "@graphql-tools/schema"
-import { extendSchema, graphql, parse } from "graphql";
+import { extendSchema, graphql, GraphQLSchema, parse } from "graphql";
 
 const remoteSchemaSDL = `
   type Query {
@@ -18,7 +18,7 @@ const localSchemaSDL = `
 `
 
 const remoteSchema = makeExecutableSchema({
-  typeDefs: remoteSchemaSDL,
+  typeDefs: parse(remoteSchemaSDL),
   resolvers: {
     Query: {
       user: () => ({
@@ -32,6 +32,9 @@ const remoteSchema = makeExecutableSchema({
 const localSchema = makeExecutableSchema({
   typeDefs: extendSchema(remoteSchema, parse(localSchemaSDL)),
   resolvers: {
+    /**
+     * Fields for which no local resolver is provided, such a `name` in this example, are used as-is.
+     */
     User: {
       /**
        * Localizes the remote result for this field.
@@ -45,21 +48,43 @@ const localSchema = makeExecutableSchema({
   }
 })
 
-;(async () => {
+/**
+ * Fields that don't exist in the remote schema need to be removed from the request document before delegating the request.
+ * 
+ * TODO: @graphql-tools has support for transforms, which could probably handle this.
+ */
+function filterLocalOnlyFields(document: string) {
+  return document.replace("hasLocalState", "")
+}
+
+async function augmentedExecute(options: {
+  localSchema: GraphQLSchema,
+  remoteSchema: GraphQLSchema,
+  document: string,
+}) {
   const remoteResult = await graphql({
-    schema: remoteSchema,
-    source: `
-      query {
-        user {
-          name
-          title
-        }
-      }
-    `
+    schema: options.remoteSchema,
+    source: filterLocalOnlyFields(options.document),
   })
   const localResult = await graphql({
-    schema: localSchema,
-    source: `
+    schema: options.localSchema,
+    source: options.document,
+    /**
+     * Inject remote result, which will return most values as-is with the default field resolver.
+     * 
+     * TODO: This would break with aliased results coming back from the remote.
+     *       @graphql-tools has support for transforms, which could probably handle this.
+     */
+    rootValue: remoteResult
+  })
+  return localResult;
+}
+
+;(async () => {
+  const result = await augmentedExecute({
+    localSchema,
+    remoteSchema,
+    document: `
       query {
         user {
           name
@@ -67,13 +92,7 @@ const localSchema = makeExecutableSchema({
           hasLocalState
         }
       }
-    `,
-    /**
-     * Inject remote result, which will return most values as-is with the default field resolver.
-     * 
-     * TODO: This would break wit aliased results coming back from the remote.
-     */
-    rootValue: remoteResult
+    `
   })
-  console.log(localResult)
+  console.log(result)
 })();
