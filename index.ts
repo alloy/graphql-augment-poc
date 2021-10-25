@@ -94,5 +94,5 @@ async function augmentedExecute(options: {
       }
     `
   })
-  console.log(result)
+  console.log(JSON.stringify(result, null, 2))
 })();
